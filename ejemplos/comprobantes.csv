@@ -1,0 +1,5 @@
+id,fecha,tipo,importe,contraparte,referencia,link_comprobante
+C001,2026-10-02,recibida,150000,Cliente Uno,ABC123,https://drive.google.com/comprobante/C001
+C002,2026-10-05,emitida,72500,Proveedor Beta,PAG778,https://drive.google.com/comprobante/C002
+C003,2026-10-11,recibida,250000,Cliente Delta,TRX900,https://drive.google.com/comprobante/C003
+C004,2026-10-18,emitida,39000,Proveedor Gamma,PG390,https://drive.google.com/comprobante/C004
