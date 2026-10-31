@@ -1,4 +1,4 @@
-# Conciliador bancario — MVP
+# Conciliador de comprobantes — MVP
 
 Automatiza el cierre mensual entre comprobantes de transferencias y extractos bancarios.
 
@@ -116,3 +116,29 @@ La pantalla principal no debería pedir que Julieta “haga conciliaciones”. D
 > 84 movimientos analizados · 76 conciliados automáticamente · 8 requieren revisión
 
 Y mostrarle directamente esas 8 excepciones.
+
+## Demo visual para mostrar el flujo
+
+En Windows, ejecutar:
+
+```bat
+run_demo.bat
+```
+
+O manualmente:
+
+```bash
+pip install -r requirements.txt
+python -m app.demo_gui
+```
+
+La demo de escritorio permite:
+
+- usar datos de ejemplo sin preparar archivos;
+- elegir extracto y comprobantes reales en CSV/XLSX;
+- ejecutar la conciliación automática;
+- mostrar únicamente las excepciones;
+- generar un Excel detallado para el contador;
+- generar un PDF resumido de cierre.
+
+El objetivo es mostrar el proceso completo en pocos minutos, sin reemplazar la aplicación que ya existe.
