@@ -2,6 +2,12 @@ from pathlib import Path
 
 import pandas as pd
 from openpyxl.styles import Font
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import mm
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from .models import Comprobante, MatchResult
 
@@ -38,6 +44,23 @@ def _receipt_row(c: Comprobante) -> dict:
     }
 
 
+def build_summary(results: list[MatchResult], unmatched_receipts: list[Comprobante]) -> dict:
+    conciliados = sum(r.estado == "CONCILIADO" for r in results)
+    revisar = sum(r.estado == "REVISAR" for r in results)
+    sin_comprobante = sum(r.estado == "SIN_COMPROBANTE" for r in results)
+    recibidas = sum(float(r.movimiento.importe) for r in results if r.movimiento.tipo == "credito")
+    emitidas = sum(float(r.movimiento.importe) for r in results if r.movimiento.tipo == "debito")
+    return {
+        "movimientos": len(results),
+        "conciliados": conciliados,
+        "revisar": revisar,
+        "sin_comprobante": sin_comprobante,
+        "comprobantes_sin_movimiento": len(unmatched_receipts),
+        "total_recibido": recibidas,
+        "total_emitido": emitidas,
+    }
+
+
 def generate_excel(
     output_path: str | Path,
     results: list[MatchResult],
@@ -49,14 +72,17 @@ def generate_excel(
     all_rows = [_result_row(r) for r in results]
     reconciled = [row for row in all_rows if row["estado"] == "CONCILIADO"]
     exceptions = [row for row in all_rows if row["estado"] != "CONCILIADO"]
+    totals = build_summary(results, unmatched_receipts)
 
     summary = pd.DataFrame(
         [
-            {"metrica": "Movimientos analizados", "valor": len(results)},
-            {"metrica": "Conciliados automáticamente", "valor": len(reconciled)},
-            {"metrica": "Requieren revisión", "valor": sum(r["estado"] == "REVISAR" for r in all_rows)},
-            {"metrica": "Movimientos sin comprobante", "valor": sum(r["estado"] == "SIN_COMPROBANTE" for r in all_rows)},
-            {"metrica": "Comprobantes sin movimiento", "valor": len(unmatched_receipts)},
+            {"metrica": "Movimientos analizados", "valor": totals["movimientos"]},
+            {"metrica": "Conciliados automáticamente", "valor": totals["conciliados"]},
+            {"metrica": "Requieren revisión", "valor": totals["revisar"]},
+            {"metrica": "Movimientos sin comprobante", "valor": totals["sin_comprobante"]},
+            {"metrica": "Comprobantes sin movimiento", "valor": totals["comprobantes_sin_movimiento"]},
+            {"metrica": "Total recibido", "valor": totals["total_recibido"]},
+            {"metrica": "Total emitido", "valor": totals["total_emitido"]},
         ]
     )
 
@@ -76,4 +102,124 @@ def generate_excel(
                 width = min(max(len(str(cell.value or "")) for cell in column_cells) + 2, 55)
                 ws.column_dimensions[column_cells[0].column_letter].width = width
 
+    return output
+
+
+def _money(value: float) -> str:
+    return "$ {:,.2f}".format(value).replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def generate_pdf(
+    output_path: str | Path,
+    results: list[MatchResult],
+    unmatched_receipts: list[Comprobante],
+    period_label: str = "Cierre mensual",
+) -> Path:
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    totals = build_summary(results, unmatched_receipts)
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "TitleCenter",
+        parent=styles["Title"],
+        alignment=TA_CENTER,
+        fontSize=18,
+        leading=22,
+        spaceAfter=8,
+    )
+    small = ParagraphStyle("Small", parent=styles["BodyText"], fontSize=8, leading=10)
+
+    doc = SimpleDocTemplate(
+        str(output),
+        pagesize=landscape(A4),
+        rightMargin=12 * mm,
+        leftMargin=12 * mm,
+        topMargin=12 * mm,
+        bottomMargin=12 * mm,
+    )
+    story = [
+        Paragraph("Informe de conciliación bancaria", title_style),
+        Paragraph(period_label, styles["Heading2"]),
+        Spacer(1, 4 * mm),
+    ]
+
+    summary_data = [
+        ["Movimientos", "Conciliados", "A revisar", "Sin comprobante", "Recibido", "Emitido"],
+        [
+            totals["movimientos"],
+            totals["conciliados"],
+            totals["revisar"],
+            totals["sin_comprobante"],
+            _money(totals["total_recibido"]),
+            _money(totals["total_emitido"]),
+        ],
+    ]
+    summary_table = Table(summary_data, repeatRows=1, hAlign="LEFT")
+    summary_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EAEAEA")),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#BDBDBD")),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ]
+        )
+    )
+    story.extend([summary_table, Spacer(1, 6 * mm)])
+
+    rows = [["Fecha", "Tipo", "Descripción / contraparte", "Importe", "Estado", "Comprobante", "Motivo"]]
+    for result in results:
+        c = result.comprobante
+        rows.append(
+            [
+                result.movimiento.fecha.strftime("%d/%m/%Y"),
+                "Recibida" if result.movimiento.tipo == "credito" else "Emitida",
+                Paragraph((c.contraparte if c else result.movimiento.descripcion) or "-", small),
+                _money(float(result.movimiento.importe)),
+                Paragraph(result.estado.replace("_", " "), small),
+                c.id if c else "-",
+                Paragraph("; ".join(result.motivos) or "-", small),
+            ]
+        )
+
+    detail = Table(rows, repeatRows=1, colWidths=[25*mm, 22*mm, 58*mm, 28*mm, 34*mm, 28*mm, 63*mm])
+    detail.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EAEAEA")),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#CFCFCF")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("ALIGN", (3, 1), (3, -1), "RIGHT"),
+                ("FONTSIZE", (0, 0), (-1, -1), 8),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]
+        )
+    )
+    story.append(detail)
+
+    if unmatched_receipts:
+        story.extend([Spacer(1, 6 * mm), Paragraph("Comprobantes sin movimiento bancario", styles["Heading2"])])
+        pending_rows = [["ID", "Fecha", "Tipo", "Contraparte", "Importe"]]
+        for c in unmatched_receipts:
+            pending_rows.append([c.id, c.fecha.strftime("%d/%m/%Y"), c.tipo, c.contraparte, _money(float(c.importe))])
+        pending_table = Table(pending_rows, repeatRows=1, hAlign="LEFT")
+        pending_table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EAEAEA")),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#CFCFCF")),
+                    ("FONTSIZE", (0, 0), (-1, -1), 8),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ]
+            )
+        )
+        story.append(pending_table)
+
+    doc.build(story)
     return output
